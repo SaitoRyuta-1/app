@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>単位円シミュレーター</title>
+  <style>
+    :root{
+      --accent : #0A84FF;
+      --green  : #34c759;
+      --orange : #ff9f0a;
+      --red    : #ff3b30;
+      --pos    : #ff3b30;  /* ＋ → 赤 */
+      --neg    : #0A84FF;  /* − → 青 */
+    }
+
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+                  "Helvetica Neue",Arial,sans-serif;
+      background:#f0f2f5;
+      display:flex; flex-direction:column; align-items:center;
+      padding:20px;
+    }
+    .container{
+      background:#fff; border-radius:16px;
+      box-shadow:0 4px 12px rgba(0,0,0,.1);
+      padding:24px; max-width:720px;
+    }
+    canvas{
+      background:#fff; border:1px solid #ddd; border-radius:8px;
+      touch-action:none;           /* モバイルでのスクロール無効化 */
+    }
+    .controls{
+      margin-top:16px; display:flex; align-items:center;
+      gap:12px; flex-wrap:wrap;
+    }
+    label{ font-weight:600; }
+    input[type="range"]{ width:260px; }
+    input[type="number"]{ width:70px; padding:4px 6px; }
+    .output{ margin-top:12px; font-size:20px; }
+    button{
+      background:var(--accent); color:#fff; border:none;
+      padding:8px 16px; border-radius:8px; cursor:pointer;
+      box-shadow:0 2px 6px rgba(0,0,0,.1);
+    }
+    button.active{ background:var(--red); }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <canvas id="canvas" width="620" height="620"></canvas>
+
+    <div class="controls">
+      <label for="angleRange">θ:</label>
+      <input id="angleRange" type="range"  min="0" max="360" step="1" value="0">
+      <input id="angleInput" type="number" min="0" max="360" step="1" value="0">
+      <span>°</span>
+      <button id="toggleAuto">Auto ▶</button>
+    </div>
+
+    <div class="controls">
+      <label for="speedRange">速度:</label>
+      <input id="speedRange" type="range" min="0.2" max="2" step="0.1" value="1">
+      <span id="speedDisplay">1×</span>
+    </div>
+
+    <div class="output" id="outputText">
+      cos0° = 1.000, sin0° = 0.000
+    </div>
+  </div>
+
+<script>
+/* === DOM & 定数 =========================================== */
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const W = canvas.width,  H = canvas.height;
+const C = { x: W/2, y: H/2 };
+const R = Math.min(W,H) * 0.4;   // 単位円半径
+const rArc = R * 0.15;           // 角度弧半径 (15%R)
+const off  = 20;                 // ±1 ラベルオフセット
+
+const rangeA = document.getElementById('angleRange');
+const inputA = document.getElementById('angleInput');
+const rangeS = document.getElementById('speedRange');
+const speedD = document.getElementById('speedDisplay');
+const outTxt = document.getElementById('outputText');
+const btnAuto= document.getElementById('toggleAuto');
+
+/* === 状態変数 ============================================= */
+let theta   = 0;     // [rad]   0 = +x 軸, CCW 正
+let speed   = 1;     // 自動回転倍率
+let auto    = false; // 自動回転フラグ
+let dragging= false; // ドラッグ中フラグ
+
+/* === 便利関数 ============================================= */
+const css   = v   => getComputedStyle(document.documentElement).getPropertyValue(v);
+const toDeg = rad => rad * 180 / Math.PI;
+const toRad = deg => deg * Math.PI / 180;
+
+/* === 描画 ================================================= */
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  /* 軸 */
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0,   C.y); ctx.lineTo(W, C.y);
+  ctx.moveTo(C.x, 0  ); ctx.lineTo(C.x, H);
+  ctx.stroke();
+
+  /* 軸ラベル & ±1 */
+  ctx.fillStyle = '#444'; ctx.font = '16px sans-serif';
+  ctx.textAlign = 'right';  ctx.fillText('O', C.x-6, C.y+22);
+  ctx.textAlign = 'center'; ctx.fillText('x', W-14, C.y-6);
+  ctx.textAlign = 'left';   ctx.fillText('y', C.x+10, 18);
+  ctx.textAlign = 'center';
+  ctx.fillText('-1', C.x-R-off, C.y-8);
+  ctx.fillText('1',  C.x+R+off, C.y-8);
+  ctx.textAlign = 'right';
+  ctx.fillText('1',  C.x-14, C.y-R-off+4);
+  ctx.fillText('-1', C.x-14, C.y+R+off);
+
+  /* 単位円 */
+  ctx.strokeStyle = '#888888'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(C.x, C.y, R, 0, Math.PI*2); ctx.stroke();
+
+  /* 点 P 座標 */
+  const Px   = C.x + R * Math.cos(theta);
+  const Py   = C.y - R * Math.sin(theta);
+  const cosV = Math.cos(theta);
+  const sinV = Math.sin(theta);
+
+  /* 垂線（破線） */
+  ctx.strokeStyle = css('--orange');
+  ctx.setLineDash([5,4]);
+  ctx.beginPath();
+  ctx.moveTo(Px, Py); ctx.lineTo(Px, C.y);
+  ctx.moveTo(Px, Py); ctx.lineTo(C.x, Py);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  /* 原点→軸上の実線（符号で色分け） */
+  ctx.lineWidth   = 2;
+  ctx.strokeStyle = cosV >= 0 ? css('--pos') : css('--neg');
+  ctx.beginPath(); ctx.moveTo(C.x, C.y); ctx.lineTo(Px, C.y); ctx.stroke();
+
+  ctx.strokeStyle = sinV >= 0 ? css('--pos') : css('--neg');
+  ctx.beginPath(); ctx.moveTo(C.x, C.y); ctx.lineTo(C.x, Py); ctx.stroke();
+
+  /* 半径 OP */
+  ctx.strokeStyle = css('--green'); ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(C.x, C.y); ctx.lineTo(Px, Py); ctx.stroke();
+
+  /* 角度弧 (0→θ, CCW) */
+  ctx.strokeStyle = css('--green'); ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(C.x, C.y, rArc, 0, -theta, true); ctx.stroke();
+
+  /* 角度ラベル */
+  const mid = theta/2;
+  ctx.fillStyle = css('--green'); ctx.font = '18px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(`${Math.round(toDeg(theta))}°`,
+               C.x + (rArc+15)*Math.cos(mid),
+               C.y - (rArc+15)*Math.sin(mid));
+
+  /* 点 P */
+  ctx.fillStyle = css('--red');
+  ctx.beginPath(); ctx.arc(Px, Py, 6, 0, Math.PI*2); ctx.fill();
+
+  /* cos / sin ラベル */
+  const deg = Math.round(toDeg(theta));
+  ctx.font = '18px sans-serif';
+
+  ctx.fillStyle = cosV >= 0 ? css('--pos') : css('--neg');
+  ctx.textAlign = 'center';
+  ctx.fillText(`cos${deg}\u00B0=${cosV.toFixed(2)}`, Px, C.y+22);
+
+  ctx.fillStyle = sinV >= 0 ? css('--pos') : css('--neg');
+  ctx.textAlign = 'left';
+  ctx.fillText(`sin${deg}\u00B0=${sinV.toFixed(2)}`, C.x+12, Py-6);
+
+  /* 下部出力 */
+  outTxt.innerHTML =
+    `cos${deg}\u00B0 = <span style="color:${cosV>=0?css('--pos'):css('--neg')}">${cosV.toFixed(3)}</span>, ` +
+    `sin${deg}\u00B0 = <span style="color:${sinV>=0?css('--pos'):css('--neg')}">${sinV.toFixed(3)}</span>`;
+}
+
+/* === UI 同期 ============================================== */
+function setAngleRad(rad){
+  /* 0–2π に正規化して整数度で UI へ反映 */
+  theta = (rad % (Math.PI*2) + Math.PI*2) % (Math.PI*2);
+  const d = Math.round(toDeg(theta));
+  rangeA.value = d;
+  inputA.value = d;
+  draw();
+}
+const setAngleDeg = deg => setAngleRad(toRad(deg));
+
+function setSpeed(v){ speed = v; speedD.textContent = `${v.toFixed(1)}×`; }
+
+/* スライダー / 数値入力（1° ステップ） */
+rangeA.addEventListener('input', e => setAngleDeg(parseInt(e.target.value,10)));
+inputA.addEventListener('input', e => setAngleDeg(parseInt(e.target.value,10)));
+rangeS.addEventListener('input', e => setSpeed(parseFloat(e.target.value)));
+
+/* === 自動回転ループ ======================================= */
+let last = null;
+function loop(ts){
+  if(auto){
+    if(last !== null){
+      const dt = ts - last;
+      setAngleRad(theta + dt*0.001*speed);
+    }
+    last = ts;
+    requestAnimationFrame(loop);
+  } else {
+    last = null;
+  }
+}
+btnAuto.addEventListener('click', ()=>{
+  auto = !auto;
+  btnAuto.textContent = auto ? 'Stop ■' : 'Auto ▶';
+  btnAuto.classList.toggle('active', auto);
+  if(auto) requestAnimationFrame(loop);
+});
+
+/* === ドラッグで点 P を動かす =============================== */
+function pos(e){
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.touches? e.touches[0].clientX : e.clientX) - r.left,
+    y: (e.touches? e.touches[0].clientY : e.clientY) - r.top
+  };
+}
+function startDrag(e){
+  const {x,y} = pos(e);
+  const dx = x - C.x, dy = C.y - y;
+  const dist = Math.hypot(dx,dy);
+  if(Math.abs(dist - R) < 15){      // 円周付近
+    dragging = true;
+    auto = false; btnAuto.textContent = 'Auto ▶'; btnAuto.classList.remove('active');
+    updateThetaByPos(x,y);
+  }
+}
+function updateThetaByPos(x,y){
+  const dx = x - C.x, dy = C.y - y;
+  setAngleRad(Math.atan2(dy,dx));
+}
+function moveDrag(e){
+  if(!dragging) return;
+  e.preventDefault();
+  const {x,y} = pos(e);
+  updateThetaByPos(x,y);
+}
+function endDrag(){ dragging = false; }
+
+canvas.addEventListener('mousedown', startDrag);
+canvas.addEventListener('touchstart', startDrag, {passive:false});
+window.addEventListener('mousemove', moveDrag);
+window.addEventListener('touchmove', moveDrag, {passive:false});
+window.addEventListener('mouseup',   endDrag);
+window.addEventListener('touchend',  endDrag);
+
+/* === 初期化 =============================================== */
+setSpeed(1);
+setAngleDeg(0);      // → draw() 呼び出し含む
+</script>
+</body>
+</html>
